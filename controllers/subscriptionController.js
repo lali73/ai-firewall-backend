@@ -119,6 +119,21 @@ const validateChapaPayload = ({ txRef, customizationTitle }) => {
   }
 };
 
+const getValidatedGatewayWireGuardPublicKey = () => {
+  const gatewayPublicKey = normalizeWireGuardPublicKey(
+    env.GATEWAY_WIREGUARD_PUBLIC_KEY
+  );
+
+  if (!isValidWireGuardPublicKey(gatewayPublicKey)) {
+    throw buildError(
+      "Invalid GATEWAY_WIREGUARD_PUBLIC_KEY. WireGuard public keys must be 44 characters long.",
+      500
+    );
+  }
+
+  return gatewayPublicKey;
+};
+
 const getVerificationStatus = (verificationData) =>
   String(
     verificationData?.status ||
@@ -186,6 +201,7 @@ const syncVerifiedPayment = async (payment, verificationData) => {
  */
 const buildVpnStatus = (user) => {
   const endpoint = `${env.GATEWAY_PUBLIC_IP}:${env.GATEWAY_WIREGUARD_PORT}`;
+  const gatewayPublicKey = getValidatedGatewayWireGuardPublicKey();
   
   return {
     isActive: Boolean(user.subscription?.isActive),
@@ -201,7 +217,7 @@ const buildVpnStatus = (user) => {
 
     // The Gateway (Host Machine) details the user needs for the [Peer] section
     gatewayConfiguration: {
-      hostPublicKey: env.GATEWAY_WIREGUARD_PUBLIC_KEY || "MISSING_FROM_ENV",
+      hostPublicKey: gatewayPublicKey,
       endpoint: endpoint,
       allowedIps: env.WIREGUARD_ALLOWED_IPS || "0.0.0.0/0, ::/0",
       persistentKeepalive: 25,
@@ -455,6 +471,7 @@ exports.downloadVpnConfig = asyncHandler(async (req, res) => {
   }
   
   const endpoint = `${env.GATEWAY_PUBLIC_IP}:${env.GATEWAY_WIREGUARD_PORT}`;
+  const gatewayPublicKey = getValidatedGatewayWireGuardPublicKey();
   const config = [
     "[Interface]",
     "PrivateKey = <YOUR_PRIVATE_KEY>",
@@ -462,7 +479,7 @@ exports.downloadVpnConfig = asyncHandler(async (req, res) => {
     `DNS = ${env.WIREGUARD_DNS || "1.1.1.1"}`,
     "",
     "[Peer]",
-    `PublicKey = ${env.GATEWAY_WIREGUARD_PUBLIC_KEY || "REPLACE_WITH_SERVER_PUBLIC_KEY"}`,
+    `PublicKey = ${gatewayPublicKey}`,
     `Endpoint = ${endpoint}`,
     `AllowedIPs = ${env.WIREGUARD_ALLOWED_IPS || "0.0.0.0/0, ::/0"}`,
     "PersistentKeepalive = 25"

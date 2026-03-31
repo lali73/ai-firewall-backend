@@ -1,5 +1,5 @@
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const WIREGUARD_PUBLIC_KEY_REGEX = /^[A-Za-z0-9+/]{42,44}={0,2}$/;
+const WIREGUARD_PUBLIC_KEY_REGEX = /^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw480]=$/;
 
 const isValidEmail = (email) => EMAIL_REGEX.test(email);
 const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

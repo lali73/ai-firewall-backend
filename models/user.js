@@ -58,7 +58,10 @@ const subscriptionHistorySchema = new mongoose.Schema(
 
 const vpnSchema = new mongoose.Schema(
   {
-    publicKey: String,
+    publicKey: {
+      type: String,
+      maxlength: 64,
+    },
     assignedIp: String,
     status: {
       type: String,
