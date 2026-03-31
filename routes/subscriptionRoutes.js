@@ -34,6 +34,7 @@ router.get("/chapa/verify/:txRef", protect, syncSubscriptionStatus, verifyChapaP
 router.get("/chapa/callback", handleChapaCallback);
 router.post("/buy", protect, syncSubscriptionStatus, buyPlan);
 router.patch("/cancel", protect, syncSubscriptionStatus, cancelMySubscription);
+router.post("/cancel", protect, syncSubscriptionStatus, cancelMySubscription);
 router.get("/my-plan", protect, syncSubscriptionStatus, getMyPlan);
 router.get("/history", protect, syncSubscriptionStatus, getSubscriptionHistory);
 router.get(

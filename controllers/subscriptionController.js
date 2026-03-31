@@ -506,7 +506,11 @@ exports.cancelMySubscription = asyncHandler(async (req, res) => {
   await user.save();
   return sendSuccess(
     res,
-    { message: "Subscription cancelled" },
+    {
+      message: "Subscription cancelled",
+      subscription: user.subscription,
+      vpn: user.vpn,
+    },
     syncWarning
       ? {
           message:
