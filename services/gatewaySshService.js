@@ -2,8 +2,11 @@ const fs = require("fs");
 const { Client } = require("ssh2");
 const env = require("../config/env");
 
-const PEER_DROP_DIR = "/home/abrahamasrat44/new_peers";
-const WG_INTERFACE = "wg0";
+const WG_INTERFACE = env.WIREGUARD_INTERFACE || "wg0";
+
+const escapeShellValue = (value) => String(value).replace(/'/g, "'\\''");
+const normalizeAllowedIp = (assignedIp) =>
+  String(assignedIp).includes("/") ? String(assignedIp) : `${assignedIp}/32`;
 
 const getPrivateKey = () => {
   const envKey = (env.GATEWAY_PRIVATE_KEY || "").trim();
@@ -124,28 +127,26 @@ const runRemoteCommand = (command) =>
       .connect(connectionConfig);
   });
 
+const addWireGuardPeer = async (publicKey, assignedIp) => {
+  const escapedKey = escapeShellValue(publicKey);
+  const escapedIp = escapeShellValue(normalizeAllowedIp(assignedIp));
+  const command = `sudo wg set ${WG_INTERFACE} peer '${escapedKey}' allowed-ips '${escapedIp}'`;
+
+  console.log(`Adding peer ${publicKey} to gateway ${WG_INTERFACE}...`);
+  return runRemoteCommand(command);
+};
+
 const createPeerProvisioningRequest = async ({
   userId,
   publicKey,
   assignedIp,
 }) => {
-  const payload = JSON.stringify({
-    public_key: publicKey,
-    assigned_ip: assignedIp,
-  });
-  const remotePath = `${PEER_DROP_DIR}/user_${userId}.json`;
-  const command = `cat <<'EOF' > ${remotePath}\n${payload}\nEOF`;
-
-  console.log(
-    `Sending provisioning request for user ${userId} to gateway...`
-  );
-  await runRemoteCommand(command);
-
-  return remotePath;
+  await addWireGuardPeer(publicKey, assignedIp);
+  return `${WG_INTERFACE}:${userId}`;
 };
 
 const removeWireGuardPeer = async (publicKey) => {
-  const escapedKey = String(publicKey).replace(/'/g, "'\\''");
+  const escapedKey = escapeShellValue(publicKey);
   const command = `sudo wg set ${WG_INTERFACE} peer '${escapedKey}' remove`;
 
   console.log(`Removing expired peer from gateway: ${publicKey}`);
@@ -153,6 +154,7 @@ const removeWireGuardPeer = async (publicKey) => {
 };
 
 module.exports = {
+  addWireGuardPeer,
   createPeerProvisioningRequest,
   removeWireGuardPeer,
   runRemoteCommand,

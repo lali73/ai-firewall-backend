@@ -23,11 +23,24 @@ const expireSubscriptions = async () => {
   let expiredCount = 0;
 
   for (const user of users) {
+    const syncAttemptedAt = new Date();
+
     try {
       if (user.vpn?.publicKey) {
-        await removeWireGuardPeer(user.vpn.publicKey);
         user.vpn.status = "revoked";
-        user.vpn.lastDeprovisionedAt = now;
+        user.vpn.lastDeprovisionedAt = syncAttemptedAt;
+
+        try {
+          await removeWireGuardPeer(user.vpn.publicKey);
+          user.vpn.lastSyncedAt = syncAttemptedAt;
+          user.vpn.lastSyncError = undefined;
+        } catch (error) {
+          user.vpn.lastSyncError = error.message;
+          console.error(
+            `Failed to deprovision expired user ${user._id}:`,
+            error.message
+          );
+        }
       }
 
       const changed = markExpiredSubscriptionForUser(user, now);
@@ -37,10 +50,7 @@ const expireSubscriptions = async () => {
         expiredCount += 1;
       }
     } catch (error) {
-      console.error(
-        `Failed to deprovision expired user ${user._id}:`,
-        error.message
-      );
+      console.error(`Failed to update expired user ${user._id}:`, error.message);
     }
   }
 

@@ -12,6 +12,7 @@ const {
   cancelMySubscription,
   getVpnAccess,
   downloadVpnConfig,
+  retrySubscriptionGatewaySync,
   createPlan,
   updatePlan,
   deletePlan,
@@ -49,6 +50,7 @@ router.get(
   requireActiveSubscription,
   downloadVpnConfig
 );
+router.post("/admin/retry-sync/:userId", protect, admin, retrySubscriptionGatewaySync);
 router.post("/create", protect, admin, createPlan);
 router.patch("/:planId", protect, admin, updatePlan);
 router.delete("/:planId", protect, admin, deletePlan);

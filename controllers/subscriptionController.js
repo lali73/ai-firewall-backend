@@ -11,7 +11,10 @@ const {
   normalizeWireGuardPublicKey,
 } = require("../utils/validation");
 const { markExpiredSubscriptionForUser } = require("../utils/subscriptionState");
-const { createPeerProvisioningRequest } = require("../services/gatewaySshService");
+const {
+  createPeerProvisioningRequest,
+  removeWireGuardPeer,
+} = require("../services/gatewaySshService");
 const {
   initializeTransaction,
   verifyTransaction,
@@ -265,6 +268,7 @@ exports.buyPlan = asyncHandler(async (req, res) => {
 
   const normalizedPublicKey = normalizeWireGuardPublicKey(wireguardPublicKey);
   const assignedIp = await findNextAvailableVpnIp();
+  let syncErrorMessage = null;
 
   // Provisioning via SSH to your Google Cloud VM
   try {
@@ -274,9 +278,10 @@ exports.buyPlan = asyncHandler(async (req, res) => {
       assignedIp,
     });
   } catch (error) {
-    throw buildError(
-      `Payment verified, but VPN provisioning failed: ${error.message}`,
-      502
+    syncErrorMessage = error.message;
+    console.error(
+      `Failed to sync gateway peer for user ${user._id}:`,
+      error.message
     );
   }
 
@@ -295,14 +300,25 @@ exports.buyPlan = asyncHandler(async (req, res) => {
   user.vpn = { 
     publicKey: normalizedPublicKey, 
     assignedIp, 
-    status: "active", 
-    lastProvisionedAt: startDate 
+    status: syncErrorMessage ? "pending" : "active", 
+    lastProvisionedAt: syncErrorMessage ? undefined : startDate,
+    lastSyncedAt: syncErrorMessage ? undefined : startDate,
+    lastSyncError: syncErrorMessage || undefined,
   };
   
   payment.status = "used";
 
   await Promise.all([payment.save(), user.save()]);
-  return sendSuccess(res, { subscription: user.subscription, vpn: buildVpnStatus(user) });
+  return sendSuccess(
+    res,
+    { subscription: user.subscription, vpn: buildVpnStatus(user) },
+    syncErrorMessage
+      ? {
+          message:
+            "Payment verified and subscription activated, but gateway sync failed. An admin can retry sync.",
+        }
+      : {}
+  );
 });
 
 exports.getMyPlan = asyncHandler(async (req, res) => sendSuccess(res, req.user.subscription));
@@ -457,10 +473,95 @@ exports.handleChapaCallback = asyncHandler(async (req, res) => {
 
 exports.cancelMySubscription = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id);
-  if (user.subscription) user.subscription.isActive = false;
-  if (user.vpn) user.vpn.status = "revoked";
+  const cancelledAt = new Date();
+
+  if (user.subscription) {
+    user.subscription.isActive = false;
+    user.subscription.status = "cancelled";
+    user.subscription.cancelledAt = cancelledAt;
+  }
+
+  let syncWarning = null;
+
+  if (user.vpn) {
+    user.vpn.status = "revoked";
+    user.vpn.lastDeprovisionedAt = cancelledAt;
+
+    if (user.vpn.publicKey) {
+      try {
+        await removeWireGuardPeer(user.vpn.publicKey);
+        user.vpn.lastSyncedAt = cancelledAt;
+        user.vpn.lastSyncError = undefined;
+      } catch (error) {
+        syncWarning = error.message;
+        user.vpn.lastSyncError = error.message;
+        console.error(
+          `Failed to revoke gateway peer for user ${user._id}:`,
+          error.message
+        );
+      }
+    }
+  }
+
   await user.save();
-  return sendSuccess(res, { message: "Subscription cancelled" });
+  return sendSuccess(
+    res,
+    { message: "Subscription cancelled" },
+    syncWarning
+      ? {
+          message:
+            "Subscription cancelled in the database, but gateway revocation failed. An admin can retry sync.",
+        }
+      : {}
+  );
+});
+
+exports.retrySubscriptionGatewaySync = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.params.userId);
+  if (!user) {
+    throw buildError("User not found.", 404);
+  }
+
+  const syncAt = new Date();
+
+  if (user.subscription?.isActive) {
+    if (!user.vpn?.publicKey || !user.vpn?.assignedIp) {
+      throw buildError("User is missing VPN key or assigned IP.", 400);
+    }
+
+    await createPeerProvisioningRequest({
+      userId: user._id,
+      publicKey: user.vpn.publicKey,
+      assignedIp: user.vpn.assignedIp,
+    });
+
+    user.vpn.status = "active";
+    user.vpn.lastProvisionedAt = syncAt;
+    user.vpn.lastSyncedAt = syncAt;
+    user.vpn.lastSyncError = undefined;
+    await user.save();
+
+    return sendSuccess(res, {
+      message: "Gateway peer sync retried successfully.",
+      vpn: user.vpn,
+    });
+  }
+
+  if (!user.vpn?.publicKey) {
+    throw buildError("User has no VPN public key to revoke.", 400);
+  }
+
+  await removeWireGuardPeer(user.vpn.publicKey);
+  user.vpn.status = "revoked";
+  user.vpn.lastDeprovisionedAt = syncAt;
+  user.vpn.lastSyncedAt = syncAt;
+  user.vpn.lastSyncError = undefined;
+  await user.save();
+
+  return sendSuccess(res, {
+    message: "Gateway peer revocation retried successfully.",
+    vpn: user.vpn,
+  });
 });
 
 exports.getVpnAccess = asyncHandler(async (req, res) => sendSuccess(res, buildVpnStatus(req.user)));

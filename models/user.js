@@ -70,6 +70,8 @@ const vpnSchema = new mongoose.Schema(
     },
     lastProvisionedAt: Date,
     lastDeprovisionedAt: Date,
+    lastSyncedAt: Date,
+    lastSyncError: String,
   },
   {
     _id: false,
