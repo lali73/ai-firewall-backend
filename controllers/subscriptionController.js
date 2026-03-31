@@ -251,7 +251,18 @@ exports.buyPlan = asyncHandler(async (req, res) => {
   const assignedIp = await findNextAvailableVpnIp();
 
   // Provisioning via SSH to your Google Cloud VM
-  await createPeerProvisioningRequest({ userId: user._id, publicKey: normalizedPublicKey, assignedIp });
+  try {
+    await createPeerProvisioningRequest({
+      userId: user._id,
+      publicKey: normalizedPublicKey,
+      assignedIp,
+    });
+  } catch (error) {
+    throw buildError(
+      `Payment verified, but VPN provisioning failed: ${error.message}`,
+      502
+    );
+  }
 
   user.subscription = { 
     planId: plan._id, 
