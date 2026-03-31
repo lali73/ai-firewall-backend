@@ -15,6 +15,7 @@ module.exports = {
   NODE_ENV: process.env.NODE_ENV || "development",
   PORT: Number.isInteger(parsedPort) ? parsedPort : 5000,
   CLIENT_URL: process.env.CLIENT_URL || "http://localhost:5173",
+  SERVER_PUBLIC_URL: process.env.SERVER_PUBLIC_URL,
   MONGO_URI: process.env.MONGO_URI,
   JWT_SECRET: process.env.JWT_SECRET,
   SMTP_HOST: process.env.SMTP_HOST,
@@ -48,4 +49,8 @@ module.exports = {
   WIREGUARD_ALLOWED_IPS:
     process.env.WIREGUARD_ALLOWED_IPS || "0.0.0.0/0, ::/0",
   ALERT_WEBHOOK_SECRET: process.env.ALERT_WEBHOOK_SECRET,
+  CHAPA_SECRET_KEY: process.env.CHAPA_SECRET_KEY,
+  CHAPA_BASE_URL: process.env.CHAPA_BASE_URL || "https://api.chapa.co/v1",
+  CHAPA_RETURN_URL: process.env.CHAPA_RETURN_URL,
+  CHAPA_CURRENCY: process.env.CHAPA_CURRENCY || "ETB",
 };

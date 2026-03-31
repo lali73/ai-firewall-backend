@@ -12,6 +12,10 @@ const {
 } = require("../utils/validation");
 const { markExpiredSubscriptionForUser } = require("../utils/subscriptionState");
 const { createPeerProvisioningRequest } = require("../services/gatewaySshService");
+const {
+  initializeTransaction,
+  verifyTransaction,
+} = require("../services/chapaService");
 const env = require("../config/env");
 
 const ALLOWED_PLAN_DURATIONS = [30, 180, 365];
@@ -25,6 +29,9 @@ const buildError = (message, statusCode) => {
 const generateTransactionId = () =>
   `SIM-${Date.now()}-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
 
+const generateChapaTransactionId = (userId) =>
+  `CHAPA-${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+
 const ensureNoActiveSubscription = (user) => {
   if (user.subscription?.isActive) {
     throw buildError("Active subscription already exists.", 409);
@@ -35,6 +42,116 @@ const ensureAllowedDuration = (duration) => {
   if (!ALLOWED_PLAN_DURATIONS.includes(duration)) {
     throw buildError("Unsupported plan duration.", 400);
   }
+};
+
+const parseUserName = (name) => {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) {
+    return { firstName: "Customer", lastName: "User" };
+  }
+
+  const [firstName, ...rest] = trimmed.split(/\s+/);
+  return {
+    firstName,
+    lastName: rest.join(" ") || "User",
+  };
+};
+
+const getServerBaseUrl = (req) => {
+  if (env.SERVER_PUBLIC_URL) {
+    return env.SERVER_PUBLIC_URL.replace(/\/+$/, "");
+  }
+
+  return `${req.protocol}://${req.get("host")}`;
+};
+
+const normalizeReturnUrl = (returnUrl) => {
+  const fallbackUrl = env.CHAPA_RETURN_URL || env.CLIENT_URL;
+
+  if (!returnUrl) {
+    return fallbackUrl;
+  }
+
+  try {
+    if (returnUrl.startsWith("/")) {
+      return new URL(returnUrl, env.CLIENT_URL).toString();
+    }
+
+    const requestedUrl = new URL(returnUrl);
+    const allowedOrigin = new URL(env.CLIENT_URL).origin;
+
+    if (requestedUrl.origin !== allowedOrigin) {
+      throw buildError("returnUrl must match the configured frontend origin.", 400);
+    }
+
+    return requestedUrl.toString();
+  } catch (error) {
+    if (error.statusCode) {
+      throw error;
+    }
+
+    throw buildError("Invalid returnUrl provided.", 400);
+  }
+};
+
+const getVerificationStatus = (verificationData) =>
+  String(
+    verificationData?.status ||
+      verificationData?.data?.status ||
+      verificationData?.tx_status ||
+      ""
+  ).toLowerCase();
+
+const extractReferenceId = (verificationData) =>
+  verificationData?.data?.ref_id ||
+  verificationData?.data?.reference ||
+  verificationData?.ref_id ||
+  null;
+
+const syncVerifiedPayment = async (payment, verificationData) => {
+  const verificationStatus = getVerificationStatus(verificationData);
+
+  if (verificationStatus !== "success") {
+    payment.status = "failed";
+    payment.chapa = {
+      ...(payment.chapa || {}),
+      callbackStatus: verificationStatus || "failed",
+      rawVerification: verificationData,
+    };
+    await payment.save();
+    throw buildError("Chapa payment is not successful.", 400);
+  }
+
+  const verifiedAmount = Number.parseFloat(
+    verificationData?.data?.amount ?? verificationData?.amount ?? payment.amount
+  );
+  const verifiedCurrency = String(
+    verificationData?.data?.currency || verificationData?.currency || payment.currency
+  ).toUpperCase();
+
+  if (Number.isFinite(verifiedAmount) && Number(verifiedAmount.toFixed(2)) !== Number(payment.amount.toFixed(2))) {
+    throw buildError("Verified payment amount does not match the selected plan.", 400);
+  }
+
+  if (verifiedCurrency !== String(payment.currency).toUpperCase()) {
+    throw buildError("Verified payment currency does not match the selected plan.", 400);
+  }
+
+  payment.status = "completed";
+  payment.simulated = false;
+  payment.provider = "chapa";
+  payment.paymentMethod = "chapa";
+  payment.paidAt = new Date();
+  payment.chapa = {
+    ...(payment.chapa || {}),
+    referenceId: extractReferenceId(verificationData),
+    callbackStatus: verificationStatus,
+    verifiedAt: new Date(),
+    rawVerification: verificationData,
+  };
+
+  await payment.save();
+  return payment;
 };
 
 /**
@@ -97,6 +214,9 @@ exports.buyPlan = asyncHandler(async (req, res) => {
 
   const payment = await Payment.findOne({ _id: paymentId, userId: user._id, status: "completed" });
   if (!payment) throw buildError("Valid payment not found.", 400);
+  if (String(payment.planId) !== String(plan._id)) {
+    throw buildError("Payment does not belong to the selected plan.", 400);
+  }
 
   const startDate = new Date();
   const validUntil = new Date(startDate.getTime());
@@ -149,11 +269,135 @@ exports.simulatePayment = asyncHandler(async (req, res) => {
     planId: plan._id, 
     amount: plan.price, 
     paymentMethod: paymentMethod || "telebirr", 
+    provider: "simulated",
     status: "completed", 
     simulated: true, 
     transactionId: generateTransactionId() 
   });
   return sendSuccess(res, payment, { statusCode: 201 });
+});
+
+exports.initializeChapaPayment = asyncHandler(async (req, res) => {
+  if (!env.CHAPA_SECRET_KEY) {
+    throw buildError("Chapa is not configured on the server.", 500);
+  }
+
+  const { planId, returnUrl } = req.body;
+  const [plan, user] = await Promise.all([Subscription.findById(planId), User.findById(req.user._id)]);
+  if (!plan || !user) throw buildError("Plan or User not found", 404);
+
+  markExpiredSubscriptionForUser(user);
+  ensureNoActiveSubscription(user);
+
+  const txRef = generateChapaTransactionId(user._id);
+  const { firstName, lastName } = parseUserName(user.name);
+  const finalReturnUrl = normalizeReturnUrl(returnUrl);
+  const callbackUrl = `${getServerBaseUrl(req)}/api/subscriptions/chapa/callback`;
+
+  const chapaResponse = await initializeTransaction({
+    amount: String(plan.price),
+    currency: env.CHAPA_CURRENCY,
+    email: user.email,
+    first_name: firstName,
+    last_name: lastName,
+    tx_ref: txRef,
+    callback_url: callbackUrl,
+    return_url: finalReturnUrl,
+    customization: {
+      title: plan.name,
+      description: `Payment for ${plan.name}`,
+    },
+  });
+
+  const checkoutUrl = chapaResponse?.data?.checkout_url;
+  if (!checkoutUrl) {
+    throw buildError("Chapa did not return a checkout URL.", 502);
+  }
+
+  const payment = await Payment.create({
+    userId: user._id,
+    planId: plan._id,
+    amount: plan.price,
+    currency: env.CHAPA_CURRENCY,
+    paymentMethod: "chapa",
+    provider: "chapa",
+    status: "pending",
+    simulated: false,
+    transactionId: txRef,
+    chapa: {
+      checkoutUrl,
+      rawVerification: chapaResponse,
+    },
+  });
+
+  return sendSuccess(
+    res,
+    {
+      paymentId: payment._id,
+      planId: plan._id,
+      txRef,
+      checkoutUrl,
+      callbackUrl,
+      returnUrl: finalReturnUrl,
+      status: payment.status,
+    },
+    { statusCode: 201 }
+  );
+});
+
+exports.verifyChapaPayment = asyncHandler(async (req, res) => {
+  if (!env.CHAPA_SECRET_KEY) {
+    throw buildError("Chapa is not configured on the server.", 500);
+  }
+
+  const txRef = req.params.txRef;
+  const payment = await Payment.findOne({
+    transactionId: txRef,
+    userId: req.user._id,
+    provider: "chapa",
+  });
+
+  if (!payment) {
+    throw buildError("Payment not found for this user.", 404);
+  }
+
+  if (payment.status !== "completed") {
+    const verificationData = await verifyTransaction(txRef);
+    await syncVerifiedPayment(payment, verificationData);
+  }
+
+  return sendSuccess(res, payment);
+});
+
+exports.handleChapaCallback = asyncHandler(async (req, res) => {
+  if (!env.CHAPA_SECRET_KEY) {
+    throw buildError("Chapa is not configured on the server.", 500);
+  }
+
+  const txRef = req.query.trx_ref || req.query.tx_ref;
+  if (!txRef) {
+    throw buildError("Missing Chapa transaction reference.", 400);
+  }
+
+  const payment = await Payment.findOne({
+    transactionId: txRef,
+    provider: "chapa",
+  });
+
+  if (!payment) {
+    throw buildError("Payment not found.", 404);
+  }
+
+  if (payment.status !== "completed") {
+    const verificationData = await verifyTransaction(txRef);
+    await syncVerifiedPayment(payment, verificationData);
+  }
+
+  return sendSuccess(res, {
+    txRef,
+    status: payment.status,
+    paymentId: payment._id,
+  });
 });
 
 exports.cancelMySubscription = asyncHandler(async (req, res) => {

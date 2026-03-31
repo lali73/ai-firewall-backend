@@ -24,9 +24,14 @@ const paymentSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    provider: {
+      type: String,
+      enum: ["simulated", "chapa"],
+      default: "simulated",
+    },
     status: {
       type: String,
-      enum: ["completed", "used", "failed"],
+      enum: ["pending", "completed", "used", "failed"],
       default: "completed",
     },
     simulated: {
@@ -41,6 +46,13 @@ const paymentSchema = new mongoose.Schema(
     paidAt: {
       type: Date,
       default: Date.now,
+    },
+    chapa: {
+      checkoutUrl: String,
+      referenceId: String,
+      callbackStatus: String,
+      verifiedAt: Date,
+      rawVerification: mongoose.Schema.Types.Mixed,
     },
   },
   {

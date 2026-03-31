@@ -6,6 +6,9 @@ const {
   getMyPlan,
   getSubscriptionHistory,
   simulatePayment,
+  initializeChapaPayment,
+  verifyChapaPayment,
+  handleChapaCallback,
   cancelMySubscription,
   getVpnAccess,
   downloadVpnConfig,
@@ -25,6 +28,9 @@ const router = express.Router();
 router.get("/", getPlans);
 
 router.post("/simulate-payment", protect, syncSubscriptionStatus, simulatePayment);
+router.post("/chapa/initialize", protect, syncSubscriptionStatus, initializeChapaPayment);
+router.get("/chapa/verify/:txRef", protect, syncSubscriptionStatus, verifyChapaPayment);
+router.get("/chapa/callback", handleChapaCallback);
 router.post("/buy", protect, syncSubscriptionStatus, buyPlan);
 router.patch("/cancel", protect, syncSubscriptionStatus, cancelMySubscription);
 router.get("/my-plan", protect, syncSubscriptionStatus, getMyPlan);

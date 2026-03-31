@@ -36,6 +36,7 @@ Notes:
 ```
 
 - Subscription access is controlled by `subscription.isActive === true`.
+- Chapa checkout is now the primary payment flow for plan purchases.
 - The product catalog is limited to three BRADSafe duration tiers:
   - 1 Month
   - 6 Months
@@ -411,12 +412,12 @@ Example response:
 }
 ```
 
-### 4.2 Simulate payment
+### 4.2 Initialize Chapa checkout
 
 Endpoint:
 
 ```http
-POST /api/subscriptions/simulate-payment
+POST /api/subscriptions/chapa/initialize
 ```
 
 Headers:
@@ -431,9 +432,55 @@ Body:
 ```json
 {
   "planId": "PLAN_ID",
-  "paymentMethod": "telebirr"
+  "returnUrl": "https://your-frontend.example.com/payment/chapa/return"
 }
 ```
+
+Notes:
+
+- `returnUrl` is optional.
+- If `returnUrl` is omitted, the backend uses `CHAPA_RETURN_URL`, or falls back to `CLIENT_URL`.
+- If `returnUrl` is provided, it must be on the same origin as the configured frontend `CLIENT_URL`.
+- Redirect the user to `checkoutUrl`.
+- This creates a pending backend payment record; the payment is not usable for plan activation until it is verified.
+
+Success response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "paymentId": "PAYMENT_ID",
+    "planId": "PLAN_ID",
+    "txRef": "CHAPA-USER_ID-1711886400000-AB12CD",
+    "checkoutUrl": "https://checkout.chapa.co/checkout/payment/...",
+    "callbackUrl": "https://your-backend.example.com/api/subscriptions/chapa/callback",
+    "returnUrl": "https://your-frontend.example.com/payment/chapa/return",
+    "status": "pending"
+  }
+}
+```
+
+### 4.3 Verify Chapa payment
+
+Endpoint:
+
+```http
+GET /api/subscriptions/chapa/verify/:txRef
+```
+
+Headers:
+
+```http
+Authorization: Bearer <token>
+```
+
+Notes:
+
+- Call this after the user returns from Chapa checkout.
+- The frontend can read `tx_ref` or `trx_ref` from the Chapa return URL and pass that value as `:txRef`.
+- This endpoint verifies the transaction against Chapa and marks the backend payment as completed only if Chapa confirms success.
+- Use the returned `_id` as the `paymentId` for the `buy` call.
 
 Success response:
 
@@ -444,20 +491,27 @@ Success response:
     "_id": "PAYMENT_ID",
     "userId": "USER_ID",
     "planId": "PLAN_ID",
-    "transactionId": "SIM-1234567890-ABCDEFGH",
     "amount": 9.99,
-    "currency": "USD",
-    "paymentMethod": "telebirr",
+    "currency": "ETB",
+    "paymentMethod": "chapa",
+    "provider": "chapa",
     "status": "completed",
-    "simulated": true,
+    "simulated": false,
+    "transactionId": "CHAPA-USER_ID-1711886400000-AB12CD",
     "paidAt": "2026-03-25T12:00:00.000Z",
+    "chapa": {
+      "checkoutUrl": "https://checkout.chapa.co/checkout/payment/...",
+      "referenceId": "APqDvYw1okk2",
+      "callbackStatus": "success",
+      "verifiedAt": "2026-03-25T12:00:05.000Z"
+    },
     "createdAt": "2026-03-25T12:00:00.000Z",
-    "updatedAt": "2026-03-25T12:00:00.000Z"
+    "updatedAt": "2026-03-25T12:00:05.000Z"
   }
 }
 ```
 
-### 4.3 Buy plan
+### 4.4 Buy plan
 
 Endpoint:
 
@@ -485,6 +539,7 @@ Body:
 Notes:
 
 - `wireguardPublicKey` is required.
+- `paymentId` must come from a Chapa payment that has already been verified successfully.
 - On success, the backend writes `/etc/wireguard/new_peers/user_{userId}.json` on the Gateway VM over SSH.
 - The frontend should treat this call as the activation point for VPN access.
 
@@ -525,7 +580,7 @@ Success response:
 }
 ```
 
-### 4.4 Get my current plan
+### 4.5 Get my current plan
 
 Endpoint:
 
@@ -558,7 +613,7 @@ Success response:
 }
 ```
 
-### 4.5 Get subscription history
+### 4.6 Get subscription history
 
 Endpoint:
 
@@ -586,7 +641,7 @@ Success response:
 }
 ```
 
-### 4.6 Cancel current subscription
+### 4.7 Cancel current subscription
 
 Endpoint:
 
@@ -622,7 +677,7 @@ Success response:
 }
 ```
 
-### 4.7 Get VPN access state
+### 4.8 Get VPN access state
 
 Endpoint:
 
@@ -665,7 +720,7 @@ Success response:
 }
 ```
 
-### 4.8 Download WireGuard config template
+### 4.9 Download WireGuard config template
 
 Endpoint:
 
@@ -838,11 +893,14 @@ Success response:
 
 1. Call `GET /api/subscriptions` and show only the three BRADSafe tiers.
 2. Generate a WireGuard keypair on the client.
-3. Call `POST /api/subscriptions/simulate-payment`.
-4. Call `POST /api/subscriptions/buy` with `planId`, `paymentId`, and `wireguardPublicKey`.
-5. Read the returned `vpn.clientConfiguration` and `vpn.gatewayConfiguration` object for the user-specific tunnel settings and gateway peer details.
-6. After success, enable "VPN Access" and "Download Config" because `subscription.isActive` is now `true`.
-7. Call `GET /api/subscriptions/download-config` and replace `PrivateKey = <YOUR_PRIVATE_KEY>` locally before importing into WireGuard.
+3. Call `POST /api/subscriptions/chapa/initialize`.
+4. Redirect the user to the returned `checkoutUrl`.
+5. After Chapa redirects back to your frontend, read `tx_ref` or `trx_ref` from the URL.
+6. Call `GET /api/subscriptions/chapa/verify/:txRef`.
+7. Take the returned payment `_id` and call `POST /api/subscriptions/buy` with `planId`, `paymentId`, and `wireguardPublicKey`.
+8. Read the returned `vpn.clientConfiguration` and `vpn.gatewayConfiguration` object for the user-specific tunnel settings and gateway peer details.
+9. After success, enable "VPN Access" and "Download Config" because `subscription.isActive` is now `true`.
+10. Call `GET /api/subscriptions/download-config` and replace `PrivateKey = <YOUR_PRIVATE_KEY>` locally before importing into WireGuard.
 
 ### Live protection flow
 
