@@ -7,6 +7,7 @@ const WG_INTERFACE = "wg0";
 
 const getPrivateKey = () => {
   const envKey = (env.GATEWAY_PRIVATE_KEY || "").trim();
+  const envKeyBase64 = (env.GATEWAY_PRIVATE_KEY_BASE64 || "").trim();
   const keyPath = (env.GATEWAY_PRIVATE_KEY_PATH || "").trim();
 
   if (keyPath) {
@@ -17,9 +18,23 @@ const getPrivateKey = () => {
     return fs.readFileSync(keyPath, "utf8");
   }
 
-  if (!envKey) {
+  if (!envKey && !envKeyBase64) {
     throw new Error(
-      "No SSH private key configured. Set GATEWAY_PRIVATE_KEY or GATEWAY_PRIVATE_KEY_PATH."
+      "No SSH private key configured. Set GATEWAY_PRIVATE_KEY_BASE64, GATEWAY_PRIVATE_KEY, or GATEWAY_PRIVATE_KEY_PATH."
+    );
+  }
+
+  if (envKeyBase64) {
+    const decoded = Buffer.from(envKeyBase64, "base64").toString("utf-8");
+    if (
+      decoded.includes("BEGIN OPENSSH PRIVATE KEY") ||
+      decoded.includes("BEGIN RSA PRIVATE KEY")
+    ) {
+      return decoded;
+    }
+
+    throw new Error(
+      "GATEWAY_PRIVATE_KEY_BASE64 did not decode into a supported private key."
     );
   }
 
