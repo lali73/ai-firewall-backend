@@ -19,6 +19,9 @@ const {
 const env = require("../config/env");
 
 const ALLOWED_PLAN_DURATIONS = [30, 180, 365];
+const CHAPA_MAX_TX_REF_LENGTH = 50;
+const CHAPA_MAX_TITLE_LENGTH = 16;
+const CHAPA_CUSTOMIZATION_TITLE = "BRADSafe";
 
 const buildError = (message, statusCode) => {
   const error = new Error(message);
@@ -29,8 +32,14 @@ const buildError = (message, statusCode) => {
 const generateTransactionId = () =>
   `SIM-${Date.now()}-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
 
-const generateChapaTransactionId = (userId) =>
-  `CHAPA-${userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+const generateChapaTransactionId = (userId) => {
+  const compactUserId = String(userId || "").slice(-8).toUpperCase();
+  const timeComponent = Date.now().toString(36).toUpperCase();
+  const randomComponent = Math.random().toString(36).slice(2, 8).toUpperCase();
+  const txRef = `CHP-${compactUserId}-${timeComponent}-${randomComponent}`;
+
+  return txRef.slice(0, CHAPA_MAX_TX_REF_LENGTH);
+};
 
 const ensureNoActiveSubscription = (user) => {
   if (user.subscription?.isActive) {
@@ -91,6 +100,22 @@ const normalizeReturnUrl = (returnUrl) => {
     }
 
     throw buildError("Invalid returnUrl provided.", 400);
+  }
+};
+
+const validateChapaPayload = ({ txRef, customizationTitle }) => {
+  if (!txRef || txRef.length > CHAPA_MAX_TX_REF_LENGTH) {
+    throw buildError(
+      `Generated Chapa tx_ref exceeds ${CHAPA_MAX_TX_REF_LENGTH} characters.`,
+      500
+    );
+  }
+
+  if (!customizationTitle || customizationTitle.length > CHAPA_MAX_TITLE_LENGTH) {
+    throw buildError(
+      `Chapa customization.title exceeds ${CHAPA_MAX_TITLE_LENGTH} characters.`,
+      500
+    );
   }
 };
 
@@ -293,6 +318,9 @@ exports.initializeChapaPayment = asyncHandler(async (req, res) => {
   const { firstName, lastName } = parseUserName(user.name);
   const finalReturnUrl = normalizeReturnUrl(returnUrl);
   const callbackUrl = `${getServerBaseUrl(req)}/api/subscriptions/chapa/callback`;
+  const customizationTitle = CHAPA_CUSTOMIZATION_TITLE;
+
+  validateChapaPayload({ txRef, customizationTitle });
 
   const chapaResponse = await initializeTransaction({
     amount: String(plan.price),
@@ -304,7 +332,7 @@ exports.initializeChapaPayment = asyncHandler(async (req, res) => {
     callback_url: callbackUrl,
     return_url: finalReturnUrl,
     customization: {
-      title: plan.name,
+      title: customizationTitle,
       description: `Payment for ${plan.name}`,
     },
   });
