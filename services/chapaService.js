@@ -2,8 +2,24 @@ const https = require("https");
 
 const env = require("../config/env");
 
+const stringifyIfObject = (value) => {
+  if (value && typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch (error) {
+      return "[unserializable object]";
+    }
+  }
+
+  return value;
+};
+
 const buildError = (message, statusCode, details) => {
-  const error = new Error(message);
+  const normalizedMessage =
+    typeof message === "string" && message.trim()
+      ? message
+      : stringifyIfObject(message) || "Chapa request failed.";
+  const error = new Error(normalizedMessage);
   error.statusCode = statusCode;
   error.details = details;
   return error;
@@ -33,21 +49,30 @@ const requestJson = (method, path, payload) =>
 
         response.on("end", () => {
           let data = null;
+          const normalizedRaw = raw.trim();
 
           try {
-            data = raw ? JSON.parse(raw) : null;
+            data = normalizedRaw ? JSON.parse(normalizedRaw) : null;
           } catch (error) {
-            reject(buildError("Invalid response received from Chapa.", 502, raw));
+            if (response.statusCode >= 400) {
+              reject(buildError(normalizedRaw || "Chapa request failed.", response.statusCode, normalizedRaw));
+              return;
+            }
+
+            reject(buildError("Invalid response received from Chapa.", 502, normalizedRaw));
             return;
           }
 
           if (response.statusCode >= 400) {
+            const errorMessage =
+              data?.message ||
+              data?.error ||
+              data?.errors ||
+              data ||
+              "Chapa request failed.";
+
             reject(
-              buildError(
-                data?.message || "Chapa request failed.",
-                response.statusCode,
-                data
-              )
+              buildError(errorMessage, response.statusCode, data)
             );
             return;
           }
