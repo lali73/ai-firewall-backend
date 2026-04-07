@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "email:verify": "node scripts/verifySmtp.js",
+    "smtp:verify": "node scripts/verifySmtp.js"
   },
   "keywords": [],
   "author": "",
@@ -23,7 +25,6 @@
     "mongodb": "^7.1.0",
     "mongoose": "^9.3.1",
     "morgan": "^1.10.1",
-    "nodemailer": "^7.0.13",
     "ssh2": "^1.17.0"
   },
   "devDependencies": {
