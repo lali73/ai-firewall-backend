@@ -1,4 +1,4 @@
-const admin = (req, res, next) => {
+const isAdmin = (req, res, next) => {
   if (req.user && req.user.role === "admin") {
     return next();
   }
@@ -8,4 +8,6 @@ const admin = (req, res, next) => {
   return next(error);
 };
 
-module.exports = { admin };
+const admin = isAdmin;
+
+module.exports = { admin, isAdmin };
