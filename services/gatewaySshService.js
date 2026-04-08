@@ -3,6 +3,9 @@ const { Client } = require("ssh2");
 const env = require("../config/env");
 
 const WG_INTERFACE = env.WIREGUARD_INTERFACE || "wg0";
+const isStrictHostKeyCheckingEnabled =
+  String(env.GATEWAY_STRICT_HOST_KEY_CHECKING || "true").toLowerCase() !==
+  "false";
 
 const escapeShellValue = (value) => String(value).replace(/'/g, "'\\''");
 const normalizeAllowedIp = (assignedIp) =>
@@ -14,6 +17,16 @@ const isSupportedPrivateKey = (value) =>
 const isPlaceholderValue = (value) =>
   typeof value === "string" &&
   value.trim().toLowerCase() === "base64-encoded-openssh-private-key";
+const decodeBase64KeyToBuffer = (value) => {
+  const decodedBuffer = Buffer.from(String(value || "").trim(), "base64");
+  const decodedText = decodedBuffer.toString("utf-8");
+
+  if (!isSupportedPrivateKey(decodedText)) {
+    throw new Error("Decoded value is not a supported OpenSSH private key.");
+  }
+
+  return decodedBuffer;
+};
 
 const getPrivateKey = () => {
   const envKey = (env.GATEWAY_PRIVATE_KEY || "").trim();
@@ -34,6 +47,17 @@ const getPrivateKey = () => {
     );
   }
 
+  if (envKey) {
+    try {
+      return decodeBase64KeyToBuffer(envKey);
+    } catch (error) {
+      console.error(
+        "SSH key decoding failed for GATEWAY_PRIVATE_KEY:",
+        error.message
+      );
+    }
+  }
+
   const normalizedEnvKey = envKey.replace(/\\n/g, "\n");
   if (isSupportedPrivateKey(normalizedEnvKey)) {
     return normalizedEnvKey;
@@ -51,15 +75,7 @@ const getPrivateKey = () => {
 
   if (envKeyBase64 && !isPlaceholderValue(envKeyBase64)) {
     try {
-      const decoded = Buffer.from(envKeyBase64, "base64").toString("utf-8");
-
-      if (isSupportedPrivateKey(decoded)) {
-        return decoded;
-      }
-
-      throw new Error(
-        "GATEWAY_PRIVATE_KEY_BASE64 did not decode into a supported private key."
-      );
+      return decodeBase64KeyToBuffer(envKeyBase64);
     } catch (error) {
       throw new Error(
         `Invalid GATEWAY_PRIVATE_KEY_BASE64 configuration: ${error.message}`
@@ -87,8 +103,19 @@ const runRemoteCommand = (command) =>
       readyTimeout: 20000,
     };
 
+    if (!isStrictHostKeyCheckingEnabled) {
+      connectionConfig.hostVerifier = () => true;
+    }
+
     client
+      .on("end", () => {
+        console.log("SSH connection ended by remote host.");
+      })
+      .on("close", (hadError) => {
+        console.log(`SSH connection closed. hadError=${Boolean(hadError)}`);
+      })
       .on("ready", () => {
+        console.log("SSH connection established successfully.");
         client.exec(command, (error, stream) => {
           if (error) {
             client.end();
@@ -121,6 +148,27 @@ const runRemoteCommand = (command) =>
         });
       })
       .on("error", (error) => {
+        console.log("SSH client raw error object:", error);
+        console.log("SSH client error details:", {
+          message: error.message,
+          level: error.level,
+          code: error.code,
+          name: error.name,
+        });
+
+        if (
+          error.code === "EACCES" ||
+          /connect EACCES/i.test(error.message || "")
+        ) {
+          const networkError = new Error(
+            "Gateway SSH connection was blocked before authentication. Port 22 could not be reached from this environment."
+          );
+          networkError.cause = error;
+          console.error("SSH Connection Error:", networkError.message);
+          reject(networkError);
+          return;
+        }
+
         if (error.message === "All configured authentication methods failed") {
           const authError = new Error(
             "Gateway SSH authentication failed. Check GATEWAY_USERNAME and the configured private key."
@@ -137,6 +185,37 @@ const runRemoteCommand = (command) =>
       .connect(connectionConfig);
   });
 
+const syncProvisionedVpnIp = async (userId, assignedIp) => {
+  if (!userId || !assignedIp) {
+    return null;
+  }
+
+  try {
+    const User = require("../models/user");
+    const {
+      normalizeVpnIp,
+      syncProtectionProfileForUser,
+    } = require("./protectionProfileService");
+    const user = await User.findById(userId);
+
+    if (!user) {
+      console.warn(
+        `Skipping protection profile sync after gateway provisioning. User not found: ${userId}`
+      );
+      return null;
+    }
+
+    return syncProtectionProfileForUser(user, {
+      vpnIp: normalizeVpnIp(assignedIp),
+    });
+  } catch (error) {
+    console.warn(
+      `Failed to sync protection profile after gateway provisioning for user ${userId}: ${error.message}`
+    );
+    return null;
+  }
+};
+
 const addWireGuardPeer = async (publicKey, assignedIp) => {
   const escapedKey = escapeShellValue(publicKey);
   const escapedIp = escapeShellValue(normalizeAllowedIp(assignedIp));
@@ -152,6 +231,7 @@ const createPeerProvisioningRequest = async ({
   assignedIp,
 }) => {
   await addWireGuardPeer(publicKey, assignedIp);
+  await syncProvisionedVpnIp(userId, assignedIp);
   return `${WG_INTERFACE}:${userId}`;
 };
 

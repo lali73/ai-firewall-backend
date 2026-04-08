@@ -64,6 +64,9 @@ const buildProtectionProfilePayload = (user, overrides = {}) => {
       overrides.lastSyncError !== undefined
         ? overrides.lastSyncError
         : user.vpn?.lastSyncError,
+    isOnline:
+      overrides.isOnline !== undefined ? Boolean(overrides.isOnline) : undefined,
+    lastSeen: overrides.lastSeen ?? undefined,
     healthStatus: overrides.healthStatus ?? undefined,
     lastHeartbeatAt: overrides.lastHeartbeatAt ?? undefined,
     lastEventType: overrides.lastEventType ?? undefined,
@@ -314,6 +317,8 @@ const recordProtectionHeartbeat = async (
   }
 
   profile.lastHeartbeatAt = occurredAt;
+  profile.lastSeen = occurredAt;
+  profile.isOnline = true;
   profile.lastEventType = "heartbeat";
   profile.lastEventAt = occurredAt;
   profile.lastEventPayload = rawPayload;

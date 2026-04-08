@@ -8,15 +8,33 @@ const {
   backfillProtectionProfilesFromUsers,
 } = require("./services/protectionProfileService");
 
+const startListening = () =>
+  new Promise((resolve, reject) => {
+    const server = app.listen(env.PORT, () => {
+      console.log(`Server running on port ${env.PORT}`);
+      resolve(server);
+    });
+
+    server.on("error", (error) => {
+      if (error.code === "EADDRINUSE") {
+        reject(
+          new Error(
+            `Port ${env.PORT} is already in use. Stop the existing backend process before restarting.`
+          )
+        );
+        return;
+      }
+
+      reject(error);
+    });
+  });
+
 const startServer = async () => {
   await connectDB();
   await syncDefaultPlans();
   await backfillProtectionProfilesFromUsers(User);
   startSubscriptionExpiryJob();
-
-  app.listen(env.PORT, () => {
-    console.log(`Server running on port ${env.PORT}`);
-  });
+  await startListening();
 };
 
 startServer().catch((error) => {

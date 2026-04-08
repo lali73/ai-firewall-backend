@@ -25,7 +25,9 @@ exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
     }
   }
 
-  const victimVpnIp = normalizeVpnIp(req.body.victim_vpn_ip);
+  const victimVpnIp = normalizeVpnIp(
+    req.body.vpn_ip || req.body.victim_vpn_ip
+  );
   const attackerIp =
     typeof req.body.attacker_ip === "string" ? req.body.attacker_ip.trim() : "";
   const wireguardPublicKey = normalizeWireGuardPublicKey(
@@ -42,7 +44,7 @@ exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
 
   if (!victimVpnIp && !wireguardPublicKey && !gatewayPeerRef) {
     const error = new Error(
-      "victim_vpn_ip, wireguard_public_key, or gateway_peer_ref is required"
+      "vpn_ip, victim_vpn_ip, wireguard_public_key, or gateway_peer_ref is required"
     );
     error.statusCode = 400;
     throw error;
@@ -74,11 +76,29 @@ exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
   const protectionProfile = resolution.profile;
 
   if (!protectionProfile) {
-    const error = new Error(
-      "No active protection profile matches the provided gateway identifiers"
+    console.warn(
+      "Gateway event received for unregistered VPN IP or identifiers.",
+      {
+        victimVpnIp,
+        wireguardPublicKey,
+        gatewayPeerRef,
+        gatewayId,
+        eventType,
+      }
     );
-    error.statusCode = 404;
-    throw error;
+
+    return sendSuccess(
+      res,
+      {
+        accepted: false,
+        eventType,
+        vpnIp: victimVpnIp || null,
+      },
+      {
+        statusCode: 202,
+        message: "No registered protection profile matched this gateway event",
+      }
+    );
   }
 
   if (!["heartbeat", "attack_detected"].includes(eventType)) {
@@ -113,6 +133,8 @@ exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
       gatewayId: gatewayEvent.gatewayId,
       detectedAt: gatewayEvent.detectedAt,
       status: "healthy",
+      isOnline: true,
+      lastSeen: protectionProfile.lastSeen,
     });
 
     return sendSuccess(

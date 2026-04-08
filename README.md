@@ -410,6 +410,12 @@ It supports:
 - querying current WireGuard state through admin routes
 - exposing protection-profile lookup for debugging and integration verification
 
+Important:
+
+- the backend may assign a VPN IP before the gateway peer is successfully provisioned
+- a user should only try to connect when the VPN peer status is `active`
+- if SSH provisioning fails, the backend records the failure in `lastSyncError`
+
 The backend expects the remote server to have:
 
 - SSH access enabled

@@ -70,6 +70,15 @@ const protectionProfileSchema = new mongoose.Schema(
     lastDeprovisionedAt: Date,
     lastSyncedAt: Date,
     lastSyncError: String,
+    isOnline: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    lastSeen: {
+      type: Date,
+      default: null,
+    },
     healthStatus: {
       type: String,
       enum: ["unknown", "healthy", "under_attack", "degraded"],

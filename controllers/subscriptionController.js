@@ -33,6 +33,22 @@ const buildError = (message, statusCode) => {
   return error;
 };
 
+const ensureVpnProvisioned = (user) => {
+  if (!user?.vpn?.assignedIp) {
+    throw buildError("VPN configuration not found.", 404);
+  }
+
+  if (user.vpn.status !== "active") {
+    const detail = user.vpn.lastSyncError
+      ? ` Gateway sync error: ${user.vpn.lastSyncError}`
+      : "";
+    throw buildError(
+      `VPN peer is not active on the gateway yet.${detail}`,
+      409
+    );
+  }
+};
+
 const generateTransactionId = () =>
   `SIM-${Date.now()}-${Math.random().toString(36).slice(2, 10).toUpperCase()}`;
 
@@ -609,12 +625,13 @@ exports.retrySubscriptionGatewaySync = asyncHandler(async (req, res) => {
   });
 });
 
-exports.getVpnAccess = asyncHandler(async (req, res) => sendSuccess(res, buildVpnStatus(req.user)));
+exports.getVpnAccess = asyncHandler(async (req, res) => {
+  ensureVpnProvisioned(req.user);
+  return sendSuccess(res, buildVpnStatus(req.user));
+});
 
 exports.downloadVpnConfig = asyncHandler(async (req, res) => {
-  if (!req.user.vpn || !req.user.vpn.assignedIp) {
-    throw buildError("VPN configuration not found.", 404);
-  }
+  ensureVpnProvisioned(req.user);
   
   const endpoint = `${env.GATEWAY_PUBLIC_IP}:${env.GATEWAY_WIREGUARD_PORT}`;
   const gatewayPublicKey = getValidatedGatewayWireGuardPublicKey();
