@@ -1,6 +1,7 @@
 const User = require("../models/user");
 const { markExpiredSubscriptionForUser } = require("../utils/subscriptionState");
 const { removeWireGuardPeer } = require("./gatewaySshService");
+const { syncProtectionProfileForUser } = require("./protectionProfileService");
 
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -47,6 +48,13 @@ const expireSubscriptions = async () => {
 
       if (changed || user.isModified("vpn")) {
         await user.save();
+        await syncProtectionProfileForUser(user, {
+          peerStatus: user.vpn?.status || "unassigned",
+          protectionEnabled: false,
+          lastDeprovisionedAt: user.vpn?.lastDeprovisionedAt,
+          lastSyncedAt: user.vpn?.lastSyncedAt,
+          lastSyncError: user.vpn?.lastSyncError,
+        });
         expiredCount += 1;
       }
     } catch (error) {

@@ -7,6 +7,13 @@ const WG_INTERFACE = env.WIREGUARD_INTERFACE || "wg0";
 const escapeShellValue = (value) => String(value).replace(/'/g, "'\\''");
 const normalizeAllowedIp = (assignedIp) =>
   String(assignedIp).includes("/") ? String(assignedIp) : `${assignedIp}/32`;
+const isSupportedPrivateKey = (value) =>
+  typeof value === "string" &&
+  (value.includes("BEGIN OPENSSH PRIVATE KEY") ||
+    value.includes("BEGIN RSA PRIVATE KEY"));
+const isPlaceholderValue = (value) =>
+  typeof value === "string" &&
+  value.trim().toLowerCase() === "base64-encoded-openssh-private-key";
 
 const getPrivateKey = () => {
   const envKey = (env.GATEWAY_PRIVATE_KEY || "").trim();
@@ -27,43 +34,46 @@ const getPrivateKey = () => {
     );
   }
 
-  if (envKeyBase64) {
-    const decoded = Buffer.from(envKeyBase64, "base64").toString("utf-8");
-    if (
-      decoded.includes("BEGIN OPENSSH PRIVATE KEY") ||
-      decoded.includes("BEGIN RSA PRIVATE KEY")
-    ) {
-      return decoded;
-    }
-
-    throw new Error(
-      "GATEWAY_PRIVATE_KEY_BASE64 did not decode into a supported private key."
-    );
-  }
-
   const normalizedEnvKey = envKey.replace(/\\n/g, "\n");
-  if (
-    normalizedEnvKey.includes("BEGIN OPENSSH PRIVATE KEY") ||
-    normalizedEnvKey.includes("BEGIN RSA PRIVATE KEY")
-  ) {
+  if (isSupportedPrivateKey(normalizedEnvKey)) {
     return normalizedEnvKey;
   }
 
   try {
     const decoded = Buffer.from(envKey, "base64").toString("utf-8");
 
-    if (
-      decoded.includes("BEGIN OPENSSH PRIVATE KEY") ||
-      decoded.includes("BEGIN RSA PRIVATE KEY")
-    ) {
+    if (isSupportedPrivateKey(decoded)) {
       return decoded;
     }
-
-    return normalizedEnvKey;
   } catch (error) {
-    console.error("SSH key decoding failed:", error.message);
+    console.error("SSH key decoding failed for GATEWAY_PRIVATE_KEY:", error.message);
+  }
+
+  if (envKeyBase64 && !isPlaceholderValue(envKeyBase64)) {
+    try {
+      const decoded = Buffer.from(envKeyBase64, "base64").toString("utf-8");
+
+      if (isSupportedPrivateKey(decoded)) {
+        return decoded;
+      }
+
+      throw new Error(
+        "GATEWAY_PRIVATE_KEY_BASE64 did not decode into a supported private key."
+      );
+    } catch (error) {
+      throw new Error(
+        `Invalid GATEWAY_PRIVATE_KEY_BASE64 configuration: ${error.message}`
+      );
+    }
+  }
+
+  if (envKey) {
     return normalizedEnvKey;
   }
+
+  throw new Error(
+    "No supported SSH private key could be derived from GATEWAY_PRIVATE_KEY or GATEWAY_PRIVATE_KEY_BASE64."
+  );
 };
 
 const runRemoteCommand = (command) =>

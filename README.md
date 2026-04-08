@@ -6,7 +6,8 @@ Express + MongoDB backend for the AI Firewall system. This service handles:
 - password reset with OTP
 - subscription and payment flows
 - VPN subscription state and WireGuard gateway sync
-- security alert ingestion from the gateway
+- dedicated protection-profile mapping between user, peer, gateway, and VPN IP
+- gateway heartbeat and attack-event ingestion
 - admin operations for users, gateway sync, and audit logs
 - dashboard data and real-time alert streaming
 
@@ -30,6 +31,7 @@ The backend also supports admin tools for:
 - changing roles
 - syncing a user's WireGuard peer to the remote gateway
 - revoking a user's WireGuard peer
+- looking up a protection profile by VPN IP, WireGuard key, or gateway peer reference
 - viewing recent admin logs
 - checking WireGuard gateway status
 
@@ -55,7 +57,9 @@ The dashboard summary returns:
 - authenticated user info
 - subscription info
 - VPN info
+- protection health and mapping info
 - latest alerts
+- latest gateway events
 - subscription history count
 
 The stream endpoint uses Server-Sent Events (SSE) for live alert updates.
@@ -97,24 +101,46 @@ Each default plan includes:
 - `Download Config`
 - `AI Shield`
 
+### Protection Profiles
+
+The backend now keeps a first-class `ProtectionProfile` for every user. This is the gateway-facing record that maps:
+
+- user
+- subscription status
+- VPN IP
+- WireGuard public key
+- gateway peer reference
+- gateway ID
+- provisioning/sync state
+- health status and heartbeat state
+- latest alert activity
+
+The existing `user.subscription` and `user.vpn` fields still exist, but the protection profile is the explicit mapping layer used for gateway integration and alert resolution.
+
 ### Security Gateway Alerts
 
 - `POST /api/alerts`
 
-This is the webhook endpoint the external security gateway calls after detecting and mitigating an attack.
+This is the webhook endpoint the external security gateway calls for heartbeat and attack events.
 
 Expected request behavior:
 
 - include `X-Alert-Secret` header when `ALERT_WEBHOOK_SECRET` is set
-- include `victim_vpn_ip` in the request body
+- include `event_type` as `heartbeat` or `attack_detected`
+- include at least one of `victim_vpn_ip`, `wireguard_public_key`, or `gateway_peer_ref`
+- include `detected_at` as an ISO timestamp when available
+- optionally include `gateway_id`
 - optionally include `attacker_ip`
 
 The backend:
 
 - validates the shared secret
-- finds the matching user by `vpn.assignedIp`
-- creates an alert record
-- pushes a live dashboard event to the user over SSE
+- resolves the matching protection profile
+- rejects conflicting identity combinations with `409`
+- records gateway events for heartbeat and attack traffic
+- creates an alert record for attack events
+- updates protection health state
+- pushes live dashboard events to the user over SSE
 
 ### Admin
 
@@ -122,6 +148,7 @@ The backend:
 - `PATCH /api/admin/users/:userId/role`
 - `DELETE /api/admin/users/:userId`
 - `GET /api/admin/gateway/status`
+- `GET /api/admin/protection/lookup`
 - `POST /api/admin/gateway/sync/:userId`
 - `POST /api/admin/gateway/revoke/:userId`
 - `GET /api/admin/logs`
@@ -188,6 +215,35 @@ Alerts store:
 
 Stores pre-verification registration details and OTP hash until the user completes registration.
 
+### ProtectionProfile
+
+Stores the backend's protection mapping and gateway-facing identity:
+
+- `userId`
+- `subscriptionStatus`
+- `protectionEnabled`
+- `peerStatus`
+- `vpnIp`
+- `wireguardPublicKey`
+- `gatewayPeerRef`
+- `gatewayId`
+- `healthStatus`
+- `lastHeartbeatAt`
+- `lastEventType`
+- `lastEventAt`
+- sync timestamps and sync error
+- alert count and last alert metadata
+
+### GatewayEvent
+
+Stores machine-oriented gateway event history such as:
+
+- heartbeat events
+- attack detection events
+- source gateway ID
+- resolved protection profile
+- raw payload and detection timestamp
+
 ### AdminLog
 
 Stores important admin actions for auditing.
@@ -198,8 +254,9 @@ When `server.js` starts, the backend:
 
 1. connects to MongoDB
 2. syncs the default subscription plans
-3. starts the daily subscription expiry job
-4. starts the HTTP server
+3. backfills protection profiles from existing users
+4. starts the daily subscription expiry job
+5. starts the HTTP server
 
 The subscription expiry job automatically:
 
@@ -351,6 +408,7 @@ It supports:
 - adding a peer
 - removing a peer
 - querying current WireGuard state through admin routes
+- exposing protection-profile lookup for debugging and integration verification
 
 The backend expects the remote server to have:
 
@@ -410,6 +468,26 @@ For the gateway webhook, the full callback URL becomes:
 https://something-random.trycloudflare.com/api/alerts
 ```
 
+Recommended gateway payload:
+
+```json
+{
+  "victim_vpn_ip": "10.0.0.2",
+  "wireguard_public_key": "client-public-key",
+  "gateway_peer_ref": "wg0:<userId>",
+  "gateway_id": "gateway-dev-1",
+  "event_type": "attack_detected",
+  "detected_at": "2026-04-08T12:00:05Z",
+  "attacker_ip": "203.0.113.10"
+}
+```
+
+Sending multiple identifiers is preferred. The backend now cross-checks them and returns `409` if they point to different protection profiles.
+
+`gateway_id` identifies the gateway instance for auditing and event tracing. It does not replace customer identity and should not be treated as the primary protected-user lookup key.
+
+The backend accepts plain IP values such as `10.0.0.12` for `victim_vpn_ip`. Internally, it can normalize formats as needed, but integrations should send plain IP format consistently to avoid confusion.
+
 ### If another developer needs the tunnel
 
 They should:
@@ -437,6 +515,35 @@ If the tunnel starts but external requests fail:
 - `npm run email:verify` - verify SMTP connectivity
 - `npm run smtp:verify` - alias for the same email verification script
 - `npm run tunnel:cloudflare` - start a Cloudflare quick tunnel to the local backend
+
+## Gateway API Contract
+
+`POST /api/alerts` returns machine-friendly JSON responses:
+
+- `200` for accepted heartbeat events
+- `201` for accepted attack events
+- `400` for malformed payloads
+- `401` for wrong `X-Alert-Secret`
+- `404` when no protection profile matches
+- `409` when multiple supplied identifiers conflict
+
+Example conflict response:
+
+```json
+{
+  "success": false,
+  "message": "Provided gateway identifiers map to conflicting protection profiles"
+}
+```
+
+## Shared Secret Contract
+
+The shared secret names differ by layer:
+
+- gateway request header: `X-Alert-Secret`
+- backend environment variable: `ALERT_WEBHOOK_SECRET`
+
+The names are different, but the value must match exactly.
 
 ## Authentication Notes
 
@@ -466,6 +573,7 @@ app.js         Express app setup
 - keep `.env.example` updated whenever configuration changes
 - quick Cloudflare tunnels are not stable permanent URLs
 - if a stable public URL is needed, use a named Cloudflare Tunnel or deploy the backend publicly
+- the backend is multi-user capable, but the current gateway repo still sends one configured protected profile at a time
 
 ## Suggested Handover Checklist
 
@@ -492,4 +600,3 @@ When another developer takes over this project, they should confirm:
 - `controllers/adminController.js`
 - `controllers/dashboardController.js`
 - `routes/subscriptionRoutes.js`
-

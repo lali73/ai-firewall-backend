@@ -15,6 +15,7 @@ const {
   createPeerProvisioningRequest,
   removeWireGuardPeer,
 } = require("../services/gatewaySshService");
+const { syncProtectionProfileForUser } = require("../services/protectionProfileService");
 const {
   initializeTransaction,
   verifyTransaction,
@@ -269,10 +270,11 @@ exports.buyPlan = asyncHandler(async (req, res) => {
   const normalizedPublicKey = normalizeWireGuardPublicKey(wireguardPublicKey);
   const assignedIp = await findNextAvailableVpnIp();
   let syncErrorMessage = null;
+  let provisioningReference = null;
 
   // Provisioning via SSH to your Google Cloud VM
   try {
-    await createPeerProvisioningRequest({
+    provisioningReference = await createPeerProvisioningRequest({
       userId: user._id,
       publicKey: normalizedPublicKey,
       assignedIp,
@@ -309,9 +311,23 @@ exports.buyPlan = asyncHandler(async (req, res) => {
   payment.status = "used";
 
   await Promise.all([payment.save(), user.save()]);
+  const protectionProfile = await syncProtectionProfileForUser(user, {
+    peerStatus: syncErrorMessage ? "pending" : "active",
+    protectionEnabled: !syncErrorMessage,
+    configIssuedAt: startDate,
+    gatewayPeerRef: provisioningReference || undefined,
+    lastProvisionedAt: syncErrorMessage ? undefined : startDate,
+    lastSyncedAt: syncErrorMessage ? undefined : startDate,
+    lastSyncError: syncErrorMessage || undefined,
+  });
+
   return sendSuccess(
     res,
-    { subscription: user.subscription, vpn: buildVpnStatus(user) },
+    {
+      subscription: user.subscription,
+      vpn: buildVpnStatus(user),
+      protection: protectionProfile,
+    },
     syncErrorMessage
       ? {
           message:
@@ -504,12 +520,20 @@ exports.cancelMySubscription = asyncHandler(async (req, res) => {
   }
 
   await user.save();
+  const protectionProfile = await syncProtectionProfileForUser(user, {
+    peerStatus: "revoked",
+    protectionEnabled: false,
+    lastDeprovisionedAt: cancelledAt,
+    lastSyncedAt: syncWarning ? undefined : cancelledAt,
+    lastSyncError: syncWarning || user.vpn?.lastSyncError,
+  });
   return sendSuccess(
     res,
     {
       message: "Subscription cancelled",
       subscription: user.subscription,
       vpn: user.vpn,
+      protection: protectionProfile,
     },
     syncWarning
       ? {
@@ -533,7 +557,7 @@ exports.retrySubscriptionGatewaySync = asyncHandler(async (req, res) => {
       throw buildError("User is missing VPN key or assigned IP.", 400);
     }
 
-    await createPeerProvisioningRequest({
+    const provisioningReference = await createPeerProvisioningRequest({
       userId: user._id,
       publicKey: user.vpn.publicKey,
       assignedIp: user.vpn.assignedIp,
@@ -544,10 +568,19 @@ exports.retrySubscriptionGatewaySync = asyncHandler(async (req, res) => {
     user.vpn.lastSyncedAt = syncAt;
     user.vpn.lastSyncError = undefined;
     await user.save();
+    const protectionProfile = await syncProtectionProfileForUser(user, {
+      peerStatus: "active",
+      protectionEnabled: true,
+      gatewayPeerRef: provisioningReference || undefined,
+      lastProvisionedAt: syncAt,
+      lastSyncedAt: syncAt,
+      lastSyncError: undefined,
+    });
 
     return sendSuccess(res, {
       message: "Gateway peer sync retried successfully.",
       vpn: user.vpn,
+      protection: protectionProfile,
     });
   }
 
@@ -561,10 +594,18 @@ exports.retrySubscriptionGatewaySync = asyncHandler(async (req, res) => {
   user.vpn.lastSyncedAt = syncAt;
   user.vpn.lastSyncError = undefined;
   await user.save();
+  const protectionProfile = await syncProtectionProfileForUser(user, {
+    peerStatus: "revoked",
+    protectionEnabled: false,
+    lastDeprovisionedAt: syncAt,
+    lastSyncedAt: syncAt,
+    lastSyncError: undefined,
+  });
 
   return sendSuccess(res, {
     message: "Gateway peer revocation retried successfully.",
     vpn: user.vpn,
+    protection: protectionProfile,
   });
 });
 
