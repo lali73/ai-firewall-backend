@@ -7,7 +7,9 @@ const { sendSuccess } = require("../utils/apiResponse");
 const {
   normalizePlanInput,
   escapeRegex,
+  isValidWireGuardPrivateKey,
   isValidWireGuardPublicKey,
+  normalizeWireGuardPrivateKey,
   normalizeWireGuardPublicKey,
 } = require("../utils/validation");
 const { markExpiredSubscriptionForUser } = require("../utils/subscriptionState");
@@ -32,6 +34,52 @@ const buildError = (message, statusCode) => {
   error.statusCode = statusCode;
   return error;
 };
+
+const generateVpnQrCodeDataUri = async (configText) => {
+  let QRCode;
+
+  try {
+    ({ default: QRCode } = await import("qrcode"));
+  } catch (importError) {
+    try {
+      QRCode = require("qrcode");
+    } catch (requireError) {
+      throw buildError(
+        "QR code generation is unavailable because the qrcode dependency is not installed.",
+        500
+      );
+    }
+  }
+
+  return QRCode.toDataURL(configText, {
+    errorCorrectionLevel: "M",
+  });
+};
+
+const buildVpnConfigText = ({ assignedIp, clientPrivateKey, gatewayPublicKey }) => {
+  const endpoint = `${env.GATEWAY_PUBLIC_IP}:${env.GATEWAY_WIREGUARD_PORT}`;
+
+  return [
+    "[Interface]",
+    `PrivateKey = ${clientPrivateKey || "<YOUR_PRIVATE_KEY>"}`,
+    `Address = ${assignedIp}`,
+    `DNS = ${env.WIREGUARD_DNS || "1.1.1.1"}`,
+    "",
+    "[Peer]",
+    `PublicKey = ${gatewayPublicKey}`,
+    `Endpoint = ${endpoint}`,
+    `AllowedIPs = ${env.WIREGUARD_ALLOWED_IPS || "0.0.0.0/0, ::/0"}`,
+    "PersistentKeepalive = 25",
+  ].join("\n");
+};
+
+const extractWireGuardPrivateKeyFromRequest = (req) =>
+  normalizeWireGuardPrivateKey(
+    req.body?.privateKey ||
+      req.body?.private_key ||
+      req.query?.privateKey ||
+      req.query?.private_key
+  );
 
 const ensureVpnProvisioned = (user) => {
   if (!user?.vpn?.assignedIp) {
@@ -632,25 +680,32 @@ exports.getVpnAccess = asyncHandler(async (req, res) => {
 
 exports.downloadVpnConfig = asyncHandler(async (req, res) => {
   ensureVpnProvisioned(req.user);
-  
-  const endpoint = `${env.GATEWAY_PUBLIC_IP}:${env.GATEWAY_WIREGUARD_PORT}`;
   const gatewayPublicKey = getValidatedGatewayWireGuardPublicKey();
-  const config = [
-    "[Interface]",
-    "PrivateKey = <YOUR_PRIVATE_KEY>",
-    `Address = ${req.user.vpn.assignedIp}`,
-    `DNS = ${env.WIREGUARD_DNS || "1.1.1.1"}`,
-    "",
-    "[Peer]",
-    `PublicKey = ${gatewayPublicKey}`,
-    `Endpoint = ${endpoint}`,
-    `AllowedIPs = ${env.WIREGUARD_ALLOWED_IPS || "0.0.0.0/0, ::/0"}`,
-    "PersistentKeepalive = 25"
-  ].join("\n");
-  
-  res.setHeader("Content-Type", "text/plain");
-  res.setHeader("Content-Disposition", 'attachment; filename="vectraflow.conf"');
-  return res.status(200).send(config);
+  const rawPrivateKey = extractWireGuardPrivateKeyFromRequest(req);
+
+  if (!rawPrivateKey) {
+    throw buildError(
+      "A WireGuard private key is required to generate an importable config and QR code.",
+      400
+    );
+  }
+
+  if (!isValidWireGuardPrivateKey(rawPrivateKey)) {
+    throw buildError("Invalid WireGuard private key.", 400);
+  }
+
+  const configText = buildVpnConfigText({
+    assignedIp: req.user.vpn.assignedIp,
+    clientPrivateKey: rawPrivateKey,
+    gatewayPublicKey,
+  });
+
+  const qrCodeDataUri = await generateVpnQrCodeDataUri(configText);
+
+  return sendSuccess(res, {
+    configText,
+    qrCodeDataUri,
+  });
 });
 
 // Admin Controllers

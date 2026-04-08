@@ -84,6 +84,7 @@ Returns the authenticated user's profile and subscription-related state.
 - `GET /api/subscriptions/history`
 - `GET /api/subscriptions/vpn-access`
 - `GET /api/subscriptions/download-config`
+- `POST /api/subscriptions/download-config`
 - `POST /api/subscriptions/admin/retry-sync/:userId`
 - `POST /api/subscriptions/create`
 - `PATCH /api/subscriptions/:planId`
@@ -117,6 +118,57 @@ The backend now keeps a first-class `ProtectionProfile` for every user. This is 
 
 The existing `user.subscription` and `user.vpn` fields still exist, but the protection profile is the explicit mapping layer used for gateway integration and alert resolution.
 
+### VPN Config and QR Code
+
+The backend can return both a WireGuard config string and a QR code Data URI for mobile import.
+
+Routes:
+
+- `GET /api/subscriptions/download-config`
+- `POST /api/subscriptions/download-config`
+
+Behavior:
+
+- `POST /api/subscriptions/download-config` is the preferred route for mobile QR imports
+- the frontend should send the device-generated WireGuard private key in the request body
+- the backend builds the full config text and generates the QR code from that exact string
+- if no private key is supplied, the backend returns `400` instead of generating a broken QR code
+
+Example request:
+
+```json
+{
+  "privateKey": "Z3ywHzo1s4BbgAAuN0C0RSFyNsYtlD2PYgwhhXpJQ5Q="
+}
+```
+
+Example response:
+
+```json
+{
+  "success": true,
+  "data": {
+    "configText": "[Interface]\nPrivateKey = Z3ywHzo1s4BbgAAuN0C0RSFyNsYtlD2PYgwhhXpJQ5Q=\nAddress = 10.0.0.3/32\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = 1xHJXB33U49imuP1vKk0ZnyXqB/+jjNcrBAbutpzGHQ=\nEndpoint = 34.173.88.58:51820\nAllowedIPs = 0.0.0.0/0, ::/0\nPersistentKeepalive = 25",
+    "qrCodeDataUri": "data:image/png;base64,..."
+  }
+}
+```
+
+WireGuard config template used for QR generation:
+
+```ini
+[Interface]
+PrivateKey = <Client_Private_Key>
+Address = <Assigned_IP>/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = <Server_Public_Key>
+Endpoint = <Gateway_Public_IP>:51820
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+```
+
 ### Security Gateway Alerts
 
 - `POST /api/alerts`
@@ -127,7 +179,7 @@ Expected request behavior:
 
 - include `X-Alert-Secret` header when `ALERT_WEBHOOK_SECRET` is set
 - include `event_type` as `heartbeat` or `attack_detected`
-- include at least one of `victim_vpn_ip`, `wireguard_public_key`, or `gateway_peer_ref`
+- include at least one of `vpn_ip`, `victim_vpn_ip`, `wireguard_public_key`, or `gateway_peer_ref`
 - include `detected_at` as an ISO timestamp when available
 - optionally include `gateway_id`
 - optionally include `attacker_ip`
@@ -141,6 +193,7 @@ The backend:
 - creates an alert record for attack events
 - updates protection health state
 - pushes live dashboard events to the user over SSE
+- accepts unknown VPN IP events with `202` and a warning instead of crashing the webhook flow
 
 ### Admin
 
@@ -149,6 +202,7 @@ The backend:
 - `DELETE /api/admin/users/:userId`
 - `GET /api/admin/gateway/status`
 - `GET /api/admin/protection/lookup`
+- `POST /api/admin/protection/register`
 - `POST /api/admin/gateway/sync/:userId`
 - `POST /api/admin/gateway/revoke/:userId`
 - `GET /api/admin/logs`
@@ -227,6 +281,8 @@ Stores the backend's protection mapping and gateway-facing identity:
 - `wireguardPublicKey`
 - `gatewayPeerRef`
 - `gatewayId`
+- `isOnline`
+- `lastSeen`
 - `healthStatus`
 - `lastHeartbeatAt`
 - `lastEventType`
@@ -409,6 +465,7 @@ It supports:
 - removing a peer
 - querying current WireGuard state through admin routes
 - exposing protection-profile lookup for debugging and integration verification
+- syncing the assigned VPN IP into the protection profile after successful provisioning
 
 Important:
 
@@ -478,6 +535,7 @@ Recommended gateway payload:
 
 ```json
 {
+  "vpn_ip": "10.0.0.2",
   "victim_vpn_ip": "10.0.0.2",
   "wireguard_public_key": "client-public-key",
   "gateway_peer_ref": "wg0:<userId>",
@@ -487,6 +545,8 @@ Recommended gateway payload:
   "attacker_ip": "203.0.113.10"
 }
 ```
+
+`vpn_ip` is the preferred primary lookup field for gateway events. `victim_vpn_ip` is still accepted for compatibility.
 
 Sending multiple identifiers is preferred. The backend now cross-checks them and returns `409` if they point to different protection profiles.
 
@@ -528,9 +588,9 @@ If the tunnel starts but external requests fail:
 
 - `200` for accepted heartbeat events
 - `201` for accepted attack events
+- `202` when the event is well-formed but the VPN IP or identifiers are not registered
 - `400` for malformed payloads
 - `401` for wrong `X-Alert-Secret`
-- `404` when no protection profile matches
 - `409` when multiple supplied identifiers conflict
 
 Example conflict response:
@@ -539,6 +599,20 @@ Example conflict response:
 {
   "success": false,
   "message": "Provided gateway identifiers map to conflicting protection profiles"
+}
+```
+
+Example unregistered-IP response:
+
+```json
+{
+  "success": true,
+  "message": "No registered protection profile matched this gateway event",
+  "data": {
+    "accepted": false,
+    "eventType": "heartbeat",
+    "vpnIp": "10.0.0.250/32"
+  }
 }
 ```
 

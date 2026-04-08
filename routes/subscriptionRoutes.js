@@ -51,6 +51,13 @@ router.get(
   requireActiveSubscription,
   downloadVpnConfig
 );
+router.post(
+  "/download-config",
+  protect,
+  syncSubscriptionStatus,
+  requireActiveSubscription,
+  downloadVpnConfig
+);
 router.post("/admin/retry-sync/:userId", protect, admin, retrySubscriptionGatewaySync);
 router.post("/create", protect, admin, createPlan);
 router.patch("/:planId", protect, admin, updatePlan);

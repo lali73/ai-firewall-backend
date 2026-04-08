@@ -20,6 +20,7 @@ const {
   resolveProtectionProfile,
   resolveProtectionProfileIdentifiers,
   syncProtectionProfileForUser,
+  upsertProtectionProfileGatewayMapping,
 } = require("../services/protectionProfileService");
 const { normalizeWireGuardPublicKey } = require("../utils/validation");
 
@@ -335,6 +336,45 @@ exports.lookupProtectionProfile = asyncHandler(async (req, res) => {
     profile,
     lookup: resolution.matches,
   });
+});
+
+exports.upsertProtectionProfileGatewayMapping = asyncHandler(async (req, res) => {
+  const user = await getUserOrThrow(req.body.userId);
+  const gatewayId = normalizeGatewayId(req.body.gatewayId || req.body.gateway_id);
+  const vpnIp = normalizeVpnIp(req.body.vpnIp || req.body.vpn_ip);
+
+  const result = await upsertProtectionProfileGatewayMapping({
+    user,
+    gatewayId,
+    vpnIp,
+  });
+
+  await createAdminLog({
+    adminUser: req.user,
+    action: "protection.gateway_mapping.upserted",
+    targetUser: user,
+    details: {
+      gatewayId,
+      vpnIp,
+      profileId: String(result.profile._id),
+      created: result.created,
+    },
+  });
+
+  return sendSuccess(
+    res,
+    {
+      created: result.created,
+      updated: result.updated,
+      profile: result.profile,
+    },
+    {
+      statusCode: result.created ? 201 : 200,
+      message: result.created
+        ? "Gateway mapping created."
+        : "Gateway mapping updated.",
+    }
+  );
 });
 
 exports.getAdminLogs = asyncHandler(async (req, res) => {

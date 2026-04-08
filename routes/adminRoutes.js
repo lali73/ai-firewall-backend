@@ -9,6 +9,7 @@ const {
   revokeGatewayUser,
   getAdminLogs,
   lookupProtectionProfile,
+  upsertProtectionProfileGatewayMapping,
 } = require("../controllers/adminController");
 const { protect } = require("../middleware/authMiddleware");
 const { isAdmin } = require("../middleware/adminMiddleware");
@@ -22,6 +23,7 @@ router.patch("/users/:userId/role", updateUserRole);
 router.delete("/users/:userId", deleteUser);
 router.get("/gateway/status", getGatewayStatus);
 router.get("/protection/lookup", lookupProtectionProfile);
+router.post("/protection/register", upsertProtectionProfileGatewayMapping);
 router.post("/gateway/sync/:userId", syncGatewayUser);
 router.post("/gateway/revoke/:userId", revokeGatewayUser);
 router.get("/logs", getAdminLogs);

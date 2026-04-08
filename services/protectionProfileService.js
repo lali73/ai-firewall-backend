@@ -94,6 +94,125 @@ const syncProtectionProfileForUser = async (user, overrides = {}) => {
   );
 };
 
+const buildGatewayVpnMismatchError = ({
+  gatewayId,
+  vpnIp,
+  claimedByGatewayId,
+  claimedByUserId,
+  claimedByProfileId,
+}) => {
+  const error = new Error(
+    `VPN IP ${vpnIp} is already registered to gateway ${claimedByGatewayId || "unknown"}.`
+  );
+  error.statusCode = 409;
+  error.details = {
+    code: "VPN_IP_GATEWAY_MISMATCH",
+    message:
+      "The provided VPN IP is already claimed by a different gateway mapping.",
+    requested: {
+      gatewayId,
+      vpnIp,
+    },
+    existing: {
+      profileId: claimedByProfileId || null,
+      userId: claimedByUserId || null,
+      gatewayId: claimedByGatewayId || null,
+      vpnIp,
+    },
+  };
+  return error;
+};
+
+const upsertProtectionProfileGatewayMapping = async ({
+  user,
+  gatewayId,
+  vpnIp,
+}) => {
+  if (!user?._id) {
+    throw new Error("Cannot upsert gateway mapping without a user.");
+  }
+
+  const normalizedGatewayId = normalizeGatewayId(gatewayId);
+  const normalizedVpnIp = normalizeVpnIp(vpnIp);
+
+  if (!normalizedGatewayId) {
+    const error = new Error("gatewayId is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!normalizedVpnIp) {
+    const error = new Error("vpnIp is required.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const [existingByUserId, existingByGatewayId, existingByVpnIp] =
+    await Promise.all([
+      ProtectionProfile.findOne({ userId: user._id }),
+      ProtectionProfile.findOne({ gatewayId: normalizedGatewayId }),
+      ProtectionProfile.findOne({ vpnIp: normalizedVpnIp }),
+    ]);
+
+  if (
+    existingByVpnIp &&
+    (!existingByGatewayId ||
+      String(existingByVpnIp._id) !== String(existingByGatewayId._id)) &&
+    normalizeGatewayId(existingByVpnIp.gatewayId) !== normalizedGatewayId
+  ) {
+    throw buildGatewayVpnMismatchError({
+      gatewayId: normalizedGatewayId,
+      vpnIp: normalizedVpnIp,
+      claimedByGatewayId: existingByVpnIp.gatewayId,
+      claimedByUserId: existingByVpnIp.userId ? String(existingByVpnIp.userId) : null,
+      claimedByProfileId: String(existingByVpnIp._id),
+    });
+  }
+
+  if (
+    existingByGatewayId &&
+    String(existingByGatewayId.userId) !== String(user._id)
+  ) {
+    const error = new Error(
+      `Gateway ID ${normalizedGatewayId} is already registered to another user.`
+    );
+    error.statusCode = 409;
+    error.details = {
+      code: "GATEWAY_ID_ALREADY_REGISTERED",
+      message:
+        "The provided gateway ID is already associated with a different protection profile.",
+      requested: {
+        gatewayId: normalizedGatewayId,
+        vpnIp: normalizedVpnIp,
+        userId: String(user._id),
+      },
+      existing: {
+        profileId: String(existingByGatewayId._id),
+        userId: String(existingByGatewayId.userId),
+        gatewayId: existingByGatewayId.gatewayId || null,
+        vpnIp: existingByGatewayId.vpnIp || null,
+      },
+    };
+    throw error;
+  }
+
+  const targetProfile = existingByGatewayId || existingByUserId;
+
+  const profile = await syncProtectionProfileForUser(user, {
+    gatewayId: normalizedGatewayId,
+    vpnIp: normalizedVpnIp,
+    gatewayPeerRef:
+      targetProfile?.gatewayPeerRef ||
+      (user._id ? buildGatewayPeerRef(user._id) : undefined),
+  });
+
+  return {
+    created: !targetProfile,
+    updated: Boolean(targetProfile),
+    profile,
+  };
+};
+
 const backfillProtectionProfilesFromUsers = async (UserModel) => {
   const users = await UserModel.find({})
     .select("name email subscription vpn")
@@ -344,4 +463,5 @@ module.exports = {
   resolveProtectionProfileIdentifiers,
   resolveProtectionProfile,
   syncProtectionProfileForUser,
+  upsertProtectionProfileGatewayMapping,
 };
