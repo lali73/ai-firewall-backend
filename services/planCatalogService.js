@@ -29,7 +29,7 @@ const syncDefaultPlans = async () => {
       { duration: plan.duration },
       plan,
       {
-        new: true,
+        returnDocument: "after",
         upsert: true,
         runValidators: true,
         setDefaultsOnInsert: true,

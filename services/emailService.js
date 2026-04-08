@@ -1,7 +1,19 @@
-const RESEND_API_URL = "https://api.resend.com/emails";
+const nodemailer = require("nodemailer");
 
-const getEmailConfig = () => {
-  const requiredVars = ["RESEND_API_KEY", "EMAIL_FROM"];
+let transporter;
+
+const getTransporter = () => {
+  if (transporter) {
+    return transporter;
+  }
+
+  const requiredVars = [
+    "SMTP_HOST",
+    "SMTP_PORT",
+    "SMTP_USER",
+    "SMTP_PASS",
+    "EMAIL_FROM",
+  ];
   const missingVars = requiredVars.filter((key) => !process.env[key]?.trim());
 
   if (missingVars.length > 0) {
@@ -12,53 +24,17 @@ const getEmailConfig = () => {
     throw error;
   }
 
-  return {
-    apiKey: process.env.RESEND_API_KEY.trim(),
-    from: process.env.EMAIL_FROM.trim(),
-  };
-};
-
-const sendEmail = async ({ to, subject, text, html }) => {
-  const { apiKey, from } = getEmailConfig();
-
-  const response = await fetch(RESEND_API_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
+  transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT),
+    secure: String(process.env.SMTP_SECURE).toLowerCase() === "true",
+    auth: {
+      user: process.env.SMTP_USER,
+      pass: process.env.SMTP_PASS,
     },
-    body: JSON.stringify({
-      from,
-      to: [to],
-      subject,
-      text,
-      html,
-    }),
   });
 
-  const responseText = await response.text();
-  let payload;
-
-  try {
-    payload = responseText ? JSON.parse(responseText) : null;
-  } catch (error) {
-    payload = { message: responseText };
-  }
-
-  if (!response.ok) {
-    const details =
-      payload?.message ||
-      payload?.error ||
-      payload?.name ||
-      `Resend request failed with status ${response.status}`;
-    const sendError = new Error(details);
-    sendError.statusCode = 502;
-    sendError.provider = "resend";
-    sendError.providerResponse = payload;
-    throw sendError;
-  }
-
-  return payload;
+  return transporter;
 };
 
 const sendRegistrationOtpEmail = async ({
@@ -67,7 +43,10 @@ const sendRegistrationOtpEmail = async ({
   otp,
   expiresInMinutes,
 }) => {
-  await sendEmail({
+  const mailTransporter = getTransporter();
+
+  await mailTransporter.sendMail({
+    from: process.env.EMAIL_FROM,
     to: email,
     subject: "Your registration verification code",
     text: `Hello ${name}, your verification code is ${otp}. It expires in ${expiresInMinutes} minutes.`,
@@ -88,7 +67,10 @@ const sendPasswordResetOtpEmail = async ({
   otp,
   expiresInMinutes,
 }) => {
-  await sendEmail({
+  const mailTransporter = getTransporter();
+
+  await mailTransporter.sendMail({
+    from: process.env.EMAIL_FROM,
     to: email,
     subject: "Your password reset code",
     text: `Hello ${name}, your password reset code is ${otp}. It expires in ${expiresInMinutes} minutes.`,
@@ -104,12 +86,15 @@ const sendPasswordResetOtpEmail = async ({
 };
 
 const verifyEmailTransport = async () => {
-  const { apiKey, from } = getEmailConfig();
+  const mailTransporter = getTransporter();
+  await mailTransporter.verify();
 
   return {
-    provider: "resend",
-    apiKeyPrefix: apiKey.slice(0, 7),
-    from,
+    host: process.env.SMTP_HOST,
+    port: Number(process.env.SMTP_PORT),
+    secure: String(process.env.SMTP_SECURE).toLowerCase() === "true",
+    user: process.env.SMTP_USER,
+    from: process.env.EMAIL_FROM,
   };
 };
 

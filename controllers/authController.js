@@ -109,7 +109,7 @@ exports.requestRegistrationOtp = asyncHandler(async (req, res) => {
       otpAttempts: 0,
     },
     {
-      new: true,
+      returnDocument: "after",
       upsert: true,
       setDefaultsOnInsert: true,
     }
