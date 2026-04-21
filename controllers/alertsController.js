@@ -5,14 +5,19 @@ const GatewayEvent = require("../models/GatewayEvent");
 const env = require("../config/env");
 const { publishUserEvent } = require("../services/dashboardNotificationService");
 const {
+  buildVpnIpVariants,
   normalizeGatewayId,
   normalizeGatewayPeerRef,
   normalizeVpnIp,
   recordProtectionHeartbeat,
   recordProtectionAlert,
   resolveProtectionProfileIdentifiers,
+  sanitizeVpnIp,
 } = require("../services/protectionProfileService");
 const { normalizeWireGuardPublicKey } = require("../utils/validation");
+
+const GATEWAY_SYSTEM_VPN_IP = "10.0.0.1";
+const KNOWN_PROTECTED_PEER_IPS = new Set(["10.0.0.2", "10.0.0.3", "10.0.0.5"]);
 
 exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
   if (env.ALERT_WEBHOOK_SECRET) {
@@ -25,9 +30,9 @@ exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
     }
   }
 
-  const victimVpnIp = normalizeVpnIp(
-    req.body.vpn_ip || req.body.victim_vpn_ip
-  );
+  const rawVictimVpnIp = req.body.vpn_ip || req.body.victim_vpn_ip;
+  const victimVpnIp = normalizeVpnIp(rawVictimVpnIp);
+  const sanitizedVictimVpnIp = sanitizeVpnIp(rawVictimVpnIp);
   const attackerIp =
     typeof req.body.attacker_ip === "string" ? req.body.attacker_ip.trim() : "";
   const wireguardPublicKey = normalizeWireGuardPublicKey(
@@ -54,6 +59,27 @@ exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
     const error = new Error("detected_at must be a valid ISO timestamp");
     error.statusCode = 400;
     throw error;
+  }
+
+  if (sanitizedVictimVpnIp === GATEWAY_SYSTEM_VPN_IP) {
+    console.info("Gateway self-event received and recorded as a system event.", {
+      eventType,
+      vpnIp: sanitizedVictimVpnIp,
+      gatewayId,
+      gatewayPeerRef,
+      detectedAt: detectedAt.toISOString(),
+    });
+
+    return sendSuccess(
+      res,
+      {
+        accepted: true,
+        eventType,
+        vpnIp: sanitizedVictimVpnIp,
+        systemEvent: true,
+      },
+      { message: "Gateway system event received" }
+    );
   }
 
   const resolution = await resolveProtectionProfileIdentifiers({
@@ -92,7 +118,7 @@ exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
       {
         accepted: false,
         eventType,
-        vpnIp: victimVpnIp || null,
+        vpnIp: sanitizedVictimVpnIp || null,
       },
       {
         statusCode: 202,
@@ -112,13 +138,22 @@ exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
     protectionProfileId: protectionProfile._id,
     eventType,
     gatewayId: gatewayId || protectionProfile.gatewayId || null,
-    victimVpnIp: victimVpnIp || protectionProfile.vpnIp,
+    victimVpnIp: sanitizedVictimVpnIp || sanitizeVpnIp(protectionProfile.vpnIp),
     wireguardPublicKey: wireguardPublicKey || protectionProfile.wireguardPublicKey,
     gatewayPeerRef: gatewayPeerRef || protectionProfile.gatewayPeerRef,
     attackerIp: attackerIp || null,
     detectedAt,
     payload: req.body,
   });
+
+  if (KNOWN_PROTECTED_PEER_IPS.has(sanitizedVictimVpnIp)) {
+    console.info("Matched registered peer event to a specific user.", {
+      eventType,
+      vpnIp: sanitizedVictimVpnIp,
+      userId: String(protectionProfile.userId),
+      matchedVpnIpVariants: buildVpnIpVariants(victimVpnIp),
+    });
+  }
 
   if (eventType === "heartbeat") {
     await recordProtectionHeartbeat(protectionProfile, {
@@ -155,7 +190,7 @@ exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
 
   const alert = await Alert.create({
     userId: protectionProfile.userId,
-    victimVpnIp: victimVpnIp || protectionProfile.vpnIp,
+    victimVpnIp: sanitizedVictimVpnIp || sanitizeVpnIp(protectionProfile.vpnIp),
     attackerIp,
     message,
     rawPayload: req.body,
@@ -187,7 +222,7 @@ exports.receiveGatewayAlert = asyncHandler(async (req, res) => {
       protectionProfileId: protectionProfile._id,
     },
     {
-      statusCode: 201,
+      statusCode: 200,
       message: "Alert received",
     }
   );

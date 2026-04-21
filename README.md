@@ -187,12 +187,14 @@ Expected request behavior:
 The backend:
 
 - validates the shared secret
+- strips CIDR suffixes from incoming VPN peer IPs before matching
 - resolves the matching protection profile
 - rejects conflicting identity combinations with `409`
 - records gateway events for heartbeat and attack traffic
 - creates an alert record for attack events
 - updates protection health state
 - pushes live dashboard events to the user over SSE
+- treats `10.0.0.1` as a gateway system event instead of an unknown-user warning
 - accepts unknown VPN IP events with `202` and a warning instead of crashing the webhook flow
 
 ### Admin
@@ -587,7 +589,7 @@ If the tunnel starts but external requests fail:
 `POST /api/alerts` returns machine-friendly JSON responses:
 
 - `200` for accepted heartbeat events
-- `201` for accepted attack events
+- `200` for accepted attack events
 - `202` when the event is well-formed but the VPN IP or identifiers are not registered
 - `400` for malformed payloads
 - `401` for wrong `X-Alert-Secret`
@@ -611,10 +613,12 @@ Example unregistered-IP response:
   "data": {
     "accepted": false,
     "eventType": "heartbeat",
-    "vpnIp": "10.0.0.250/32"
+    "vpnIp": "10.0.0.250"
   }
 }
 ```
+
+If the gateway sends `vpn_ip` values like `10.0.0.2/32`, the backend now sanitizes them to `10.0.0.2` for lookup while still tolerating legacy stored `/32` profile values during matching.
 
 ## Shared Secret Contract
 

@@ -2,14 +2,16 @@ const ProtectionProfile = require("../models/ProtectionProfile");
 const env = require("../config/env");
 const { normalizeWireGuardPublicKey } = require("../utils/validation");
 
-const normalizeVpnIp = (value) => {
+const sanitizeVpnIp = (value) => {
   const raw = typeof value === "string" ? value.trim() : "";
   if (!raw) {
     return "";
   }
 
-  return raw.includes("/") ? raw : `${raw}/32`;
+  return raw.split("/")[0].trim();
 };
+
+const normalizeVpnIp = (value) => sanitizeVpnIp(value);
 
 const normalizeGatewayPeerRef = (value) =>
   typeof value === "string" ? value.trim() : "";
@@ -19,6 +21,16 @@ const normalizeGatewayId = (value) =>
 
 const buildGatewayPeerRef = (userId) =>
   `${env.WIREGUARD_INTERFACE || "wg0"}:${String(userId)}`;
+
+const buildVpnIpVariants = (value) => {
+  const sanitizedVpnIp = sanitizeVpnIp(value);
+
+  if (!sanitizedVpnIp) {
+    return [];
+  }
+
+  return [...new Set([sanitizedVpnIp, `${sanitizedVpnIp}/32`])];
+};
 
 const buildProtectionProfilePayload = (user, overrides = {}) => {
   const vpnIp = normalizeVpnIp(overrides.vpnIp ?? user.vpn?.assignedIp);
@@ -233,6 +245,7 @@ const resolveProtectionProfile = async ({
   requireActiveProtection = false,
 }) => {
   const normalizedVpnIp = normalizeVpnIp(victimVpnIp);
+  const vpnIpVariants = buildVpnIpVariants(normalizedVpnIp);
   const normalizedPublicKey = normalizeWireGuardPublicKey(wireguardPublicKey);
   const normalizedPeerRef = normalizeGatewayPeerRef(gatewayPeerRef);
   const normalizedGatewayId = normalizeGatewayId(gatewayId);
@@ -247,15 +260,15 @@ const resolveProtectionProfile = async ({
     clauses.push({ gatewayId: normalizedGatewayId });
   }
 
-  if (normalizedVpnIp && normalizedPublicKey) {
+  if (vpnIpVariants.length && normalizedPublicKey) {
     clauses.push({
-      vpnIp: normalizedVpnIp,
+      vpnIp: { $in: vpnIpVariants },
       wireguardPublicKey: normalizedPublicKey,
     });
   }
 
-  if (normalizedVpnIp) {
-    clauses.push({ vpnIp: normalizedVpnIp });
+  if (vpnIpVariants.length) {
+    clauses.push({ vpnIp: { $in: vpnIpVariants } });
   }
 
   if (normalizedPublicKey) {
@@ -284,6 +297,7 @@ const resolveProtectionProfileIdentifiers = async ({
   requireActiveProtection = false,
 }) => {
   const normalizedVpnIp = normalizeVpnIp(victimVpnIp);
+  const vpnIpVariants = buildVpnIpVariants(normalizedVpnIp);
   const normalizedPublicKey = normalizeWireGuardPublicKey(wireguardPublicKey);
   const normalizedPeerRef = normalizeGatewayPeerRef(gatewayPeerRef);
   const normalizedGatewayId = normalizeGatewayId(gatewayId);
@@ -292,11 +306,11 @@ const resolveProtectionProfileIdentifiers = async ({
     : {};
 
   const checks = [
-    normalizedVpnIp
+    vpnIpVariants.length
       ? {
           key: "victim_vpn_ip",
           value: normalizedVpnIp,
-          query: { ...baseQuery, vpnIp: normalizedVpnIp },
+          query: { ...baseQuery, vpnIp: { $in: vpnIpVariants } },
         }
       : null,
     normalizedPublicKey
@@ -454,6 +468,7 @@ const deleteProtectionProfileForUser = async (userId) =>
 module.exports = {
   backfillProtectionProfilesFromUsers,
   buildGatewayPeerRef,
+  buildVpnIpVariants,
   deleteProtectionProfileForUser,
   normalizeGatewayId,
   normalizeGatewayPeerRef,
@@ -462,6 +477,7 @@ module.exports = {
   recordProtectionAlert,
   resolveProtectionProfileIdentifiers,
   resolveProtectionProfile,
+  sanitizeVpnIp,
   syncProtectionProfileForUser,
   upsertProtectionProfileGatewayMapping,
 };
